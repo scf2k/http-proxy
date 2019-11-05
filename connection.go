@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"github.com/satori/go.uuid"
@@ -11,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -127,12 +130,18 @@ func (c *ProxyConnectionHandler) auth() bool {
 	return true
 }
 
-func (c *ProxyConnectionHandler) tunnel() error {
-	remote, err := net.DialTimeout("tcp", c.Request.Host, 10*time.Second)
+func (c *ProxyConnectionHandler) tunnel() (err error) {
+	var remote net.Conn
+	if c.Server.Sniff {
+		remote, err = tls.Dial("tcp", c.Request.Host, nil)
+	} else {
+		remote, err = net.DialTimeout("tcp", c.Request.Host, 10*time.Second)
+	}
 	if err != nil {
 		http.Error(c.Response, err.Error(), http.StatusServiceUnavailable)
-		return err
+		return
 	}
+
 	c.Response.WriteHeader(http.StatusOK)
 	hijacker, ok := c.Response.(http.Hijacker)
 	if !ok {
@@ -142,16 +151,51 @@ func (c *ProxyConnectionHandler) tunnel() error {
 	hijacked, _, err := hijacker.Hijack()
 	if err != nil {
 		http.Error(c.Response, err.Error(), http.StatusServiceUnavailable)
-		return err
+		return
 	}
-	go pipe(remote, hijacked)
-	go pipe(hijacked, remote)
+
+	var client io.ReadWriteCloser = hijacked
+	var dump *os.File
+	if c.Server.Sniff {
+		clientTls := tls.Server(hijacked, c.Server.config)
+
+		err = clientTls.Handshake()
+		if err != nil {
+			http.Error(c.Response, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		client = clientTls
+
+		reqId := uuid.NewV1().String()
+		log.Printf("dumping request to %s\n", reqId)
+
+		dump, err = os.Create(reqId)
+		if err != nil {
+			log.Printf("error opening dump file %s\n", err.Error())
+		} else {
+			defer dump.Close()
+		}
+	}
+
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
+
+	go pipe(wg, remote, client, dump)
+	go pipe(wg, client, remote, dump)
+
+	wg.Wait()
 
 	return nil
 }
 
-func pipe(destination io.WriteCloser, source io.ReadCloser) {
+func pipe(wg *sync.WaitGroup, destination io.WriteCloser, source io.ReadCloser, sniffer io.Writer) {
 	defer destination.Close()
 	defer source.Close()
-	io.Copy(destination, source)
+	defer wg.Done()
+
+	var reader io.Reader = source
+	if !reflect.ValueOf(sniffer).IsNil() {
+		reader = io.TeeReader(source, sniffer)
+	}
+	io.Copy(destination, reader)
 }

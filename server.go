@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,12 +17,21 @@ type Server struct {
 	Auth               string
 	Sniff              bool
 
+	config        *tls.Config
 	listener      *http.Server
 	shutdownMutex sync.Mutex
 	shuttingDown  bool
 }
 
 func (s *Server) Start() (err error) {
+	if s.Sniff {
+		cer, err := tls.LoadX509KeyPair("server.crt", "server.key")
+		if err != nil {
+			log.Fatal(err)
+		}
+		s.config = &tls.Config{Certificates: []tls.Certificate{cer}}
+	}
+
 	if !strings.HasSuffix(s.Host, ":") {
 		s.Host += ":"
 	}

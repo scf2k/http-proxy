@@ -13,7 +13,8 @@ func main() {
 	port := flag.Int("port", 8080, "port to listen")
 	via := flag.String("via", "", "value for the Via header")
 	auth := flag.String("auth", "", "user:password to access the proxy")
-	sniff := flag.Bool("sniff", false, "dump requests and responses to disk")
+	sniff := flag.Bool("sniff", false, "dump requests and responses to disk (server.crt and server.key "+
+		"are expected to be in the current dir to allow https sniffing)")
 
 	flag.Parse()
 
